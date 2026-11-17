@@ -1,8 +1,8 @@
 {
   "name": "illuminati-global",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Independent Illuminati-themed membership community",
+  "description": "Independent Illuminati-themed worldwide membership community",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -17,7 +17,8 @@
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.9.5"
+    "mongoose": "^8.9.5",
+    "libphonenumber-js": "^1.11.20"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

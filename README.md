@@ -1,51 +1,47 @@
-# Illuminati Global — Independent Membership Community
+# Illuminati Global — v2.0
 
-A starter website for an independent, Illuminati-themed community. It does not claim affiliation with any historical organization or secret society.
+An independent, Illuminati-themed worldwide membership community. This project is not affiliated with any historical organization or secret society.
 
-## Included
-- Responsive black-and-gold landing page
-- Free member registration
-- Password hashing with bcrypt
-- Member login and cookie-based sessions
-- Member profile dashboard
-- Admin member list
-- Admin account creation script
-- MongoDB persistence
-- Basic security headers and login/registration rate limiting
+## Features
+- Responsive black-and-gold public website with a supplied-artwork slideshow.
+- Free registration, secure password hashing and cookie-based sessions.
+- Country selector, calling-code suggestions, currency display and optional browser location assistance.
+- Separate Terms of Service and Privacy Policy pages.
+- Member dashboard with profile, internal account balance and transaction history.
+- Administrator-only member directory and balance credit/debit controls with an audit trail.
+- Members cannot transfer balances to one another or edit their own balances.
 
 ## Requirements
-- Node.js 18 or newer
-- MongoDB database (local or Atlas)
+- Node.js 18+
+- MongoDB Atlas or another MongoDB deployment
 
-## Setup
-1. Extract the ZIP.
-2. Run `npm install`.
-3. Copy `.env.example` to `.env`.
-4. Set `MONGODB_URI` to your MongoDB connection string.
-5. Set `JWT_SECRET` to a unique random value of at least 32 characters.
-6. Run `npm start`.
+## Environment variables
+Copy `.env.example` values into Render → Environment. Never commit `.env`.
 
-Open `http://localhost:3000`.
+- `MONGODB_URI`: MongoDB connection string
+- `JWT_SECRET`: unique random secret of at least 32 characters
+- `NODE_ENV`: `production`
+- `PORT`: supplied by Render automatically
 
-## Create the first administrator
-After configuring `.env`, run:
+## Run locally
+```bash
+npm install
+npm start
+```
 
+## Create the one administrator account
 ```bash
 npm run create-admin
 ```
+The script refuses to create a second administrator. Keep the admin credentials private. If an admin already exists, use that account.
 
-Enter the administrator details in the terminal. This script creates or promotes the specified account to admin. Do not expose this script through a public website.
+## Render
+- Build command: `npm install`
+- Start command: `npm start`
+- Add `MONGODB_URI`, `JWT_SECRET`, and `NODE_ENV=production` under Environment.
 
-Then log in through `/login.html`; admins are redirected to `/admin.html`.
-
-## Deployment
-Set the environment variables in your hosting provider:
-- `MONGODB_URI`
-- `JWT_SECRET`
-- `NODE_ENV=production`
-- `PORT` (if required by your host)
-
-Deploy with `npm install` and `npm start`. Use HTTPS in production.
+## Important balance limitation
+The balance is an internal platform ledger. Credits and debits are manually recorded by the administrator and shown in the member's selected country currency. The currency label is a display denomination, not a live foreign-exchange conversion. This project does not process bank transfers, mobile-money payouts, deposits, withdrawals or customer-to-customer transfers. Do not describe internal balances as cash or guaranteed payouts.
 
 ## Before public launch
-This is a starter implementation, not a fully audited production service. Add email verification, password reset, CSRF protection appropriate to your deployment, privacy/terms pages reviewed for your jurisdiction, monitoring, backups, and security testing. Do not collect sensitive personal information you do not need.
+Review the legal templates for the operator's actual identity, contact details, applicable privacy and consumer laws, retention requirements, and the countries in which the service will operate. Add email verification, password recovery, monitoring, backups and an independently reviewed security process before handling sensitive or financial data.
