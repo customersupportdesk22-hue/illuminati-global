@@ -49,6 +49,31 @@ const Transaction = mongoose.model("Transaction", new mongoose.Schema({
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true },
   createdAt: { type: Date, default: Date.now }
 }));
+const MemberRequest = mongoose.model("MemberRequest", new mongoose.Schema({
+  member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+  type: { type: String, enum: ["withdraw", "send", "invest", "bank_transfer"], required: true },
+  amount: { type: Number, required: true, min: 0.01 },
+  currency: { type: String, required: true, uppercase: true },
+  details: { type: String, trim: true, maxlength: 500, default: "" },
+  status: { type: String, enum: ["pending", "approved", "rejected", "reviewed"], default: "pending" },
+  adminNote: { type: String, trim: true, maxlength: 500, default: "" },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Member", default: null },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}));
+const Notification = mongoose.model("Notification", new mongoose.Schema({
+  member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+  title: { type: String, required: true, maxlength: 100 },
+  body: { type: String, required: true, maxlength: 400 },
+  read: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+}));
+const ChatMessage = mongoose.model("ChatMessage", new mongoose.Schema({
+  member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+  senderRole: { type: String, enum: ["member", "admin"], required: true },
+  message: { type: String, required: true, maxlength: 2000, trim: true },
+  createdAt: { type: Date, default: Date.now }
+}));
 
 const callingCodes = Object.fromEntries(getCountries().map(code => [code, `+${getCountryCallingCode(code)}`]));
 const countries = currencyData.map(c => ({
@@ -82,9 +107,30 @@ app.post("/api/register", authLimiter, async (req,res) => {
 app.post("/api/login",authLimiter,async(req,res)=>{try{const email=String(req.body.email||"").trim().toLowerCase(),password=String(req.body.password||"");const member=await Member.findOne({email}).select("+password");if(!member||!(await bcrypt.compare(password,member.password)))return res.status(401).json({message:"Incorrect email or password."});setAuthCookie(res,signToken(member));res.json({message:"Login successful.",redirect:member.role==="admin"?"/admin.html":"/dashboard.html"});}catch(error){console.error("Login error:",error);res.status(500).json({message:"Login failed. Please try again."});}});
 app.get("/api/me",authenticate,async(req,res)=>{try{const m=await Member.findById(req.user.id).select("-password").lean();if(!m)return res.status(404).json({message:"Member account not found."});res.json(m);}catch{res.status(500).json({message:"Could not load your account."});}});
 app.get("/api/me/transactions",authenticate,async(req,res)=>{try{const items=await Transaction.find({member:req.user.id}).sort({createdAt:-1}).limit(100).lean();res.json(items);}catch{res.status(500).json({message:"Could not load transactions."});}});
+app.post("/api/me/requests",authenticate,moneyLimiter,async(req,res)=>{
+  try {
+    const type=String(req.body.type||""), amount=Number(req.body.amount), details=String(req.body.details||"").trim();
+    if(!["withdraw","send","invest","bank_transfer"].includes(type)||!Number.isFinite(amount)||amount<=0||amount>100000000||details.length>500) return res.status(400).json({message:"Enter a valid request type, amount and details."});
+    const member=await Member.findById(req.user.id).select("currency");
+    const request=await MemberRequest.create({member:req.user.id,type,amount:Number(amount.toFixed(2)),currency:member.currency,details});
+    await Notification.create({member:req.user.id,title:"Request received",body:`Your ${type.replace("_"," ")} request for ${amount.toFixed(2)} ${member.currency} has been received and is awaiting administrator review.`});
+    res.status(201).json({message:"Your request has been submitted for administrator review.",requestId:request._id});
+  } catch(error){console.error("Member request error:",error);res.status(500).json({message:"Could not submit your request."});}
+});
+app.get("/api/me/requests",authenticate,async(req,res)=>{try{res.json(await MemberRequest.find({member:req.user.id}).sort({createdAt:-1}).limit(100).lean());}catch{res.status(500).json({message:"Could not load your requests."});}});
+app.get("/api/me/notifications",authenticate,async(req,res)=>{try{res.json(await Notification.find({member:req.user.id}).sort({createdAt:-1}).limit(50).lean());}catch{res.status(500).json({message:"Could not load notifications."});}});
+app.post("/api/me/notifications/read",authenticate,async(req,res)=>{try{await Notification.updateMany({member:req.user.id,read:false},{$set:{read:true}});res.json({message:"Notifications marked as read."});}catch{res.status(500).json({message:"Could not update notifications."});}});
+app.get("/api/me/chat",authenticate,async(req,res)=>{try{res.json(await ChatMessage.find({member:req.user.id}).sort({createdAt:1}).limit(200).lean());}catch{res.status(500).json({message:"Could not load chat."});}});
+app.post("/api/me/chat",authenticate,moneyLimiter,async(req,res)=>{try{const message=String(req.body.message||"").trim();if(!message||message.length>2000)return res.status(400).json({message:"Enter a message of up to 2,000 characters."});const item=await ChatMessage.create({member:req.user.id,senderRole:"member",message});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send your message."});}});
 app.post("/api/logout",(req,res)=>{res.clearCookie("token",{httpOnly:true,secure:process.env.NODE_ENV==="production",sameSite:"lax"});res.json({message:"You have been logged out."});});
 app.get("/api/admin/members",authenticate,adminOnly,async(req,res)=>{try{const members=await Member.find().select("-password").sort({createdAt:-1}).lean();res.json(members);}catch{res.status(500).json({message:"Could not load members."});}});
 app.get("/api/admin/transactions",authenticate,adminOnly,async(req,res)=>{try{const items=await Transaction.find().populate("member","name email country currency").populate("performedBy","name email").sort({createdAt:-1}).limit(250).lean();res.json(items);}catch{res.status(500).json({message:"Could not load transactions."});}});
+app.get("/api/admin/requests",authenticate,adminOnly,async(req,res)=>{try{const items=await MemberRequest.find().populate("member","name email country currency").sort({createdAt:-1}).limit(300).lean();res.json(items);}catch{res.status(500).json({message:"Could not load member requests."});}});
+app.post("/api/admin/requests/:id",authenticate,adminOnly,async(req,res)=>{
+  try{const status=String(req.body.status||""),adminNote=String(req.body.adminNote||"").trim();if(!["approved","rejected","reviewed"].includes(status)||adminNote.length>500)return res.status(400).json({message:"Choose a valid request status and note."});const item=await MemberRequest.findByIdAndUpdate(req.params.id,{$set:{status,adminNote,reviewedBy:req.user.id,updatedAt:new Date()}},{new:true}).populate("member","name email");if(!item)return res.status(404).json({message:"Request not found."});await Notification.create({member:item.member._id,title:"Request updated",body:`Your ${item.type.replace("_"," ")} request status is now ${status}.${adminNote?` ${adminNote}`:""}`});res.json({message:"Request status updated."});}catch{res.status(500).json({message:"Could not update request."});}
+});
+app.get("/api/admin/chat",authenticate,adminOnly,async(req,res)=>{try{const items=await ChatMessage.find().populate("member","name email").sort({createdAt:-1}).limit(300).lean();res.json(items);}catch{res.status(500).json({message:"Could not load chat messages."});}});
+app.post("/api/admin/chat",authenticate,adminOnly,async(req,res)=>{try{const memberId=String(req.body.memberId||""),message=String(req.body.message||"").trim();if(!mongoose.isValidObjectId(memberId)||!message||message.length>2000)return res.status(400).json({message:"Select a member and enter a message."});const item=await ChatMessage.create({member:memberId,senderRole:"admin",message});await Notification.create({member:memberId,title:"New support reply",body:"An administrator has replied to your support conversation."});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send the reply."});}});
 app.post("/api/admin/balance",authenticate,adminOnly,moneyLimiter,async(req,res)=>{
   const memberId=String(req.body.memberId||""),type=String(req.body.type||""),amount=Number(req.body.amount),note=String(req.body.note||"").trim();
   if(!mongoose.isValidObjectId(memberId)||!["credit","debit"].includes(type)||!Number.isFinite(amount)||amount<=0||amount>100000000||note.length>240) return res.status(400).json({message:"Enter a valid member, adjustment type, amount and note."});
