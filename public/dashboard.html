@@ -1,34 +1,5 @@
-<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Member Dashboard | Illuminati Global</title><link rel="stylesheet" href="/style.css"></head>
-<body class="form-page">
-<main class="form-card wide-card">
-  <a class="brand centered" href="/">◉ <span>ILLUMINATI GLOBAL</span></a>
-  <div class="symbol small-symbol" aria-hidden="true">𓂀</div>
-  <h1>Member dashboard</h1>
-  <p id="welcome" class="muted">Loading your account…</p>
-  <div id="profile" class="profile"></div>
-  <button class="button full" id="logout">LOG OUT</button>
-</main>
-<script>
-const safe = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-(async () => {
-  try {
-    const response = await fetch("/api/me");
-    if (!response.ok) { location.href="/login.html"; return; }
-    const m = await response.json();
-    document.getElementById("welcome").textContent = `Welcome, ${m.name}`;
-    document.getElementById("profile").innerHTML = `
-      <p><span>Full name</span>${safe(m.name)}</p>
-      <p><span>Email</span>${safe(m.email)}</p>
-      <p><span>Phone</span>${safe(m.phone)}</p>
-      <p><span>Country</span>${safe(m.country)}</p>
-      <p><span>Membership</span>Free community member</p>
-      <p><span>Joined</span>${new Date(m.createdAt).toLocaleDateString()}</p>`;
-  } catch { document.getElementById("welcome").textContent = "Could not load your profile."; }
-})();
-document.getElementById("logout").addEventListener("click", async () => {
-  await fetch("/api/logout", {method:"POST"}); location.href="/";
-});
-</script>
-</body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Member Dashboard | Illuminati Global</title><link rel="stylesheet" href="/style.css"></head><body class="app-page"><header class="site-header"><a class="brand" href="/"><span class="brand-mark">◉</span><span>ILLUMINATI GLOBAL</span></a><button class="button secondary small" id="logout">Log out</button></header><main class="dashboard-shell"><div class="dashboard-heading"><div><p class="eyebrow">MEMBER SPACE</p><h1 id="welcome">Your dashboard</h1><p class="muted">Your membership overview and account activity.</p></div><span class="member-pill">FREE MEMBER</span></div><section class="balance-card"><div><p class="eyebrow">AVAILABLE ACCOUNT BALANCE</p><div class="balance-amount" id="balance">—</div><p class="balance-note" id="currencyNote">Your country currency</p></div><div class="balance-mark">◉</div><p class="fine-print">This is an internal account ledger balance. It is not a bank deposit or guaranteed cash payout.</p></section><div class="dashboard-grid"><section class="panel"><div class="panel-head"><h2>Profile information</h2><span class="status-dot">Active</span></div><div id="profile" class="profile"></div></section><section class="panel"><div class="panel-head"><h2>Recent activity</h2><span class="muted small-text">Latest 100</span></div><div id="transactions" class="transactions"><p class="muted">Loading activity…</p></div></section></div></main><footer><a href="/terms.html">Terms</a> · <a href="/privacy.html">Privacy</a> · Independent community</footer><script>
+const safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let member;
+function money(n,c){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:c||'USD'}).format(Number(n)||0)}catch{return `${c||'USD'} ${(Number(n)||0).toFixed(2)}`}}
+(async()=>{try{const r=await fetch('/api/me');if(!r.ok){location.href='/login.html';return;}member=await r.json();if(member.role==='admin'){location.href='/admin.html';return;}document.getElementById('welcome').textContent=`Welcome, ${member.name}`;document.getElementById('balance').textContent=money(member.balance,member.currency);document.getElementById('currencyNote').textContent=`Displayed in ${member.currency} · ${member.country}`;document.getElementById('profile').innerHTML=`<p><span>Full name</span>${safe(member.name)}</p><p><span>Email</span>${safe(member.email)}</p><p><span>Phone</span>${safe(member.dialCode)} ${safe(member.phone)}</p><p><span>Country</span>${safe(member.country)}</p><p><span>Currency</span>${safe(member.currency)}</p><p><span>Member since</span>${new Date(member.createdAt).toLocaleDateString()}</p>`;const tr=await fetch('/api/me/transactions');const items=await tr.json();document.getElementById('transactions').innerHTML=items.length?items.map(t=>`<article class="transaction-row"><div><strong>${t.type==='credit'?'Balance credit':'Balance debit'}</strong><small>${safe(t.note||'Account adjustment')} · ${new Date(t.createdAt).toLocaleString()}</small></div><b class="${t.type==='credit'?'positive':'negative'}">${t.type==='credit'?'+':'−'}${money(t.amount,t.currency)}</b></article>`).join(''):'<p class="muted">No account activity yet.</p>';}catch{document.getElementById('welcome').textContent='Could not load your account. Please refresh.';}})();document.getElementById('logout').addEventListener('click',async()=>{await fetch('/api/logout',{method:'POST'});location.href='/';});
+</script></body></html>
