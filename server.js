@@ -7,6 +7,8 @@ const cookieParser = require("cookie-parser");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
+const multer = require("multer");
+const crypto = require("crypto");
 const { getCountries, getCountryCallingCode } = require("libphonenumber-js");
 const countryNames = new Intl.DisplayNames(["en"], { type: "region" });
 const currencyData = require("./public/countries.json");
@@ -36,6 +38,8 @@ const MemberSchema = new mongoose.Schema({
   balance: { type: Number, default: 0, min: 0 },
   password: { type: String, required: true, select: false },
   role: { type: String, enum: ["member", "admin"], default: "member" },
+  joinReason: { type: String, trim: true, maxlength: 300, default: "" },
+  kycStatus: { type: String, enum: ["not_submitted", "pending", "approved", "rejected"], default: "not_submitted" },
   termsAcceptedAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 });
@@ -72,8 +76,29 @@ const ChatMessage = mongoose.model("ChatMessage", new mongoose.Schema({
   member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
   senderRole: { type: String, enum: ["member", "admin"], required: true },
   message: { type: String, required: true, maxlength: 2000, trim: true },
+  deliveredAt: { type: Date, default: Date.now },
+  readAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 }));
+
+const KycDocument = mongoose.model("KycDocument", new mongoose.Schema({
+  member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+  kind: { type: String, enum: ["id_front", "id_back", "selfie", "kra"], required: true },
+  filename: { type: String, required: true, maxlength: 180 },
+  mimeType: { type: String, required: true, enum: ["image/jpeg", "image/png", "application/pdf"] },
+  size: { type: Number, required: true, max: 8 * 1024 * 1024 },
+  sha256: { type: String, required: true },
+  data: { type: Buffer, required: true, select: false },
+  createdAt: { type: Date, default: Date.now }
+}));
+const KycReview = mongoose.model("KycReview", new mongoose.Schema({
+  member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, unique: true },
+  kraNumber: { type: String, trim: true, maxlength: 30, default: "" },
+  status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
+  adminNote: { type: String, trim: true, maxlength: 500, default: "" },
+  updatedAt: { type: Date, default: Date.now }
+}));
+const kycUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
 
 const callingCodes = Object.fromEntries(getCountries().map(code => [code, `+${getCountryCallingCode(code)}`]));
 const countries = currencyData.map(c => ({
@@ -91,16 +116,16 @@ function adminOnly(req,res,next) { if(req.user.role!=="admin") return res.status
 app.post("/api/register", authLimiter, async (req,res) => {
   try {
     const name=String(req.body.name||"").trim(), email=String(req.body.email||"").trim().toLowerCase(), phone=String(req.body.phone||"").trim();
-    const countryCode=String(req.body.countryCode||"").toUpperCase(), password=String(req.body.password||"");
+    const countryCode=String(req.body.countryCode||"").toUpperCase(), password=String(req.body.password||""), joinReason=String(req.body.joinReason||"").trim();
     const selectedCountry=countries.find(c=>c.code===countryCode);
-    if(!name||!email||!phone||!selectedCountry||!req.body.acceptTerms) return res.status(400).json({message:"Complete all required fields, select a valid country and accept the Terms and Privacy Policy."});
+    if(!name||!email||!phone||!selectedCountry||!joinReason||!req.body.acceptTerms||!req.body.acceptCode) return res.status(400).json({message:"Complete all required fields, select a valid country and accept the Terms and Privacy Policy."});
     const country=selectedCountry.name, dialCode=selectedCountry.dialCode, currency=selectedCountry.currency;
     if(name.length>100||phone.length>30||country.length>80) return res.status(400).json({message:"Please check your registration details."});
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({message:"Enter a valid email address."});
     if(password.length<8||password.length>128) return res.status(400).json({message:"Password must be 8–128 characters."});
     if(!countries.some(c=>c.code===countryCode)) return res.status(400).json({message:"Select a valid country."});
     const passwordHash=await bcrypt.hash(password,12);
-    await Member.create({name,email,phone,country,countryCode,dialCode,currency,balance:0,password:passwordHash,termsAcceptedAt:new Date()});
+    await Member.create({name,email,phone,country,countryCode,dialCode,currency,balance:0,password:passwordHash,joinReason,termsAcceptedAt:new Date()});
     res.status(201).json({message:"Your free account has been created. You can now log in."});
   } catch(error) { if(error?.code===11000) return res.status(409).json({message:"That email address is already registered."}); console.error("Registration error:",error); res.status(500).json({message:"Registration could not be completed. Please try again."}); }
 });
@@ -120,8 +145,35 @@ app.post("/api/me/requests",authenticate,moneyLimiter,async(req,res)=>{
 app.get("/api/me/requests",authenticate,async(req,res)=>{try{res.json(await MemberRequest.find({member:req.user.id}).sort({createdAt:-1}).limit(100).lean());}catch{res.status(500).json({message:"Could not load your requests."});}});
 app.get("/api/me/notifications",authenticate,async(req,res)=>{try{res.json(await Notification.find({member:req.user.id}).sort({createdAt:-1}).limit(50).lean());}catch{res.status(500).json({message:"Could not load notifications."});}});
 app.post("/api/me/notifications/read",authenticate,async(req,res)=>{try{await Notification.updateMany({member:req.user.id,read:false},{$set:{read:true}});res.json({message:"Notifications marked as read."});}catch{res.status(500).json({message:"Could not update notifications."});}});
-app.get("/api/me/chat",authenticate,async(req,res)=>{try{res.json(await ChatMessage.find({member:req.user.id}).sort({createdAt:1}).limit(200).lean());}catch{res.status(500).json({message:"Could not load chat."});}});
+app.get("/api/me/chat",authenticate,async(req,res)=>{try{await ChatMessage.updateMany({member:req.user.id,senderRole:"admin",readAt:null},{$set:{readAt:new Date()}});res.json(await ChatMessage.find({member:req.user.id}).sort({createdAt:1}).limit(200).lean());}catch{res.status(500).json({message:"Could not load chat."});}});
 app.post("/api/me/chat",authenticate,moneyLimiter,async(req,res)=>{try{const message=String(req.body.message||"").trim();if(!message||message.length>2000)return res.status(400).json({message:"Enter a message of up to 2,000 characters."});const item=await ChatMessage.create({member:req.user.id,senderRole:"member",message});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send your message."});}});
+// Identity documents are stored privately in MongoDB, never in the public web folder.
+app.get("/api/me/kyc", authenticate, async (req,res) => {
+  try { const docs=await KycDocument.find({member:req.user.id}).select("-data -sha256").lean(); const review=await KycReview.findOne({member:req.user.id}).select("-__v").lean(); res.json({status:review?.status||"not_submitted",kraNumber:review?.kraNumber||"",documents:docs.map(d=>({kind:d.kind,filename:d.filename,size:d.size,createdAt:d.createdAt}))}); }
+  catch { res.status(500).json({message:"Could not load verification status."}); }
+});
+app.post("/api/me/kyc", authenticate, kycUpload.single("document"), async (req,res) => {
+  try {
+    const kind=String(req.body.kind||""), kraNumber=String(req.body.kraNumber||"").trim();
+    if(!["id_front","id_back","selfie","kra"].includes(kind)) return res.status(400).json({message:"Choose a valid document type."});
+    if(!req.file) return res.status(400).json({message:"Choose a file to upload."});
+    if(!["image/jpeg","image/png","application/pdf"].includes(req.file.mimetype)) return res.status(400).json({message:"Only JPG, PNG or PDF files are accepted."});
+    if(kind!=="kra" && req.file.mimetype==="application/pdf") return res.status(400).json({message:"ID and selfie uploads must be JPG or PNG images."});
+    if(kind==="kra" && !kraNumber) return res.status(400).json({message:"Enter your KRA PIN for this document."});
+    const digest=crypto.createHash("sha256").update(req.file.buffer).digest("hex");
+    if(await KycDocument.findOne({member:req.user.id,sha256:digest}).select("_id")) return res.status(409).json({message:"This exact document has already been submitted."});
+    await KycDocument.create({member:req.user.id,kind,filename:path.basename(req.file.originalname).slice(0,180),mimeType:req.file.mimetype,size:req.file.size,sha256:digest,data:req.file.buffer});
+    const update={status:"pending",updatedAt:new Date()}; if(kind==="kra") update.kraNumber=kraNumber;
+    await KycReview.findOneAndUpdate({member:req.user.id},{$set:update},{upsert:true,new:true});
+    await Member.findByIdAndUpdate(req.user.id,{kycStatus:"pending"});
+    await Notification.create({member:req.user.id,title:"Verification document received",body:"Your verification document was securely received and is awaiting review."});
+    res.status(201).json({message:"Document received securely. Your verification is pending review."});
+  } catch(error) { console.error("KYC upload:",error); res.status(500).json({message:"Could not store your document."}); }
+});
+app.get("/api/admin/kyc",authenticate,adminOnly,async(req,res)=>{try{res.json(await KycReview.find().populate("member","name email country").sort({updatedAt:-1}).lean());}catch{res.status(500).json({message:"Could not load verification reviews."});}});
+app.get("/api/admin/kyc/:memberId/documents/:kind",authenticate,adminOnly,async(req,res)=>{try{if(!["id_front","id_back","selfie","kra"].includes(req.params.kind))return res.sendStatus(404);const doc=await KycDocument.findOne({member:req.params.memberId,kind:req.params.kind}).select("+data");if(!doc)return res.sendStatus(404);res.set("Content-Type",doc.mimeType);res.set("Content-Disposition",`inline; filename="${doc.filename.replace(/["\\]/g,"")}"`);res.set("Cache-Control","no-store");res.send(doc.data);}catch{res.sendStatus(500);}});
+app.post("/api/admin/kyc/:memberId/review",authenticate,adminOnly,async(req,res)=>{try{const status=String(req.body.status||"");if(!["approved","rejected"].includes(status))return res.status(400).json({message:"Choose approved or rejected."});const adminNote=String(req.body.adminNote||"").trim().slice(0,500);const review=await KycReview.findOneAndUpdate({member:req.params.memberId},{$set:{status,adminNote,updatedAt:new Date()}},{new:true});if(!review)return res.status(404).json({message:"Verification record not found."});await Member.findByIdAndUpdate(req.params.memberId,{kycStatus:status});await Notification.create({member:req.params.memberId,title:"Verification status updated",body:`Your identity verification was ${status}. ${adminNote}`.trim()});res.json({message:"Verification review saved."});}catch{res.status(500).json({message:"Could not save verification review."});}});
+
 app.post("/api/logout",(req,res)=>{res.clearCookie("token",{httpOnly:true,secure:process.env.NODE_ENV==="production",sameSite:"lax"});res.json({message:"You have been logged out."});});
 app.get("/api/admin/members",authenticate,adminOnly,async(req,res)=>{try{const members=await Member.find().select("-password").sort({createdAt:-1}).lean();res.json(members);}catch{res.status(500).json({message:"Could not load members."});}});
 app.get("/api/admin/transactions",authenticate,adminOnly,async(req,res)=>{try{const items=await Transaction.find().populate("member","name email country currency").populate("performedBy","name email").sort({createdAt:-1}).limit(250).lean();res.json(items);}catch{res.status(500).json({message:"Could not load transactions."});}});
@@ -129,7 +181,7 @@ app.get("/api/admin/requests",authenticate,adminOnly,async(req,res)=>{try{const 
 app.post("/api/admin/requests/:id",authenticate,adminOnly,async(req,res)=>{
   try{const status=String(req.body.status||""),adminNote=String(req.body.adminNote||"").trim();if(!["approved","rejected","reviewed"].includes(status)||adminNote.length>500)return res.status(400).json({message:"Choose a valid request status and note."});const item=await MemberRequest.findByIdAndUpdate(req.params.id,{$set:{status,adminNote,reviewedBy:req.user.id,updatedAt:new Date()}},{new:true}).populate("member","name email");if(!item)return res.status(404).json({message:"Request not found."});await Notification.create({member:item.member._id,title:"Request updated",body:`Your ${item.type.replace("_"," ")} request status is now ${status}.${adminNote?` ${adminNote}`:""}`});res.json({message:"Request status updated."});}catch{res.status(500).json({message:"Could not update request."});}
 });
-app.get("/api/admin/chat",authenticate,adminOnly,async(req,res)=>{try{const items=await ChatMessage.find().populate("member","name email").sort({createdAt:-1}).limit(300).lean();res.json(items);}catch{res.status(500).json({message:"Could not load chat messages."});}});
+app.get("/api/admin/chat",authenticate,adminOnly,async(req,res)=>{try{if(req.query.memberId && mongoose.isValidObjectId(req.query.memberId)) await ChatMessage.updateMany({member:req.query.memberId,senderRole:"member",readAt:null},{$set:{readAt:new Date()}});const items=await ChatMessage.find().populate("member","name email").sort({createdAt:-1}).limit(300).lean();res.json(items);}catch{res.status(500).json({message:"Could not load chat messages."});}});
 app.post("/api/admin/chat",authenticate,adminOnly,async(req,res)=>{try{const memberId=String(req.body.memberId||""),message=String(req.body.message||"").trim();if(!mongoose.isValidObjectId(memberId)||!message||message.length>2000)return res.status(400).json({message:"Select a member and enter a message."});const item=await ChatMessage.create({member:memberId,senderRole:"admin",message});await Notification.create({member:memberId,title:"New support reply",body:"An administrator has replied to your support conversation."});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send the reply."});}});
 app.post("/api/admin/balance",authenticate,adminOnly,moneyLimiter,async(req,res)=>{
   const memberId=String(req.body.memberId||""),type=String(req.body.type||""),amount=Number(req.body.amount),note=String(req.body.note||"").trim();

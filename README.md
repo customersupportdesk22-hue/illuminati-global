@@ -9,7 +9,11 @@ Worldwide membership platform with a responsive public website and member applic
 - Dedicated Terms of Service and Privacy Policy pages.
 - Mobile-first member dashboard with Home, Wallet, Account and Settings navigation.
 - Internal wallet ledger, activity history, member service requests and in-app notifications.
+- Full-screen member support chat with timestamps, delivered/read indicators and branded header.
 - Member-to-administrator support messaging with an administrator inbox.
+- Identity verification submissions for ID front/back, selfie and KRA document, with duplicate-file hash checks and administrator review.
+- Membership reason and mandatory member code acceptance at registration.
+- Cookie preference notice and published contact email.
 - Administrator-only balance credits/debits and request review with an audit trail.
 - Members cannot transfer balances to one another or edit their own balances.
 
@@ -42,6 +46,8 @@ The script refuses to create a second administrator. Keep administrator credenti
 - Keep your existing `MONGODB_URI` and `JWT_SECRET` environment variables.
 
 ## Financial and service request limitations
+KYC files are held in private MongoDB documents (maximum 8 MB per upload) and exposed only through authenticated administrator routes. Configure encrypted MongoDB storage, backups, access controls and a documented retention/deletion policy before collecting real identity documents.
+
 The wallet is an internal platform ledger. Only the administrator can credit or debit member balances. Member withdraw, send, invest and bank-transfer actions submit requests for administrator review; they do not execute a payout, bank transfer, customer-to-customer transfer, investment, or guarantee of returns. A payment provider and the required legal/compliance arrangements must be integrated and verified before real-money functionality is offered.
 
 ## Before public launch
