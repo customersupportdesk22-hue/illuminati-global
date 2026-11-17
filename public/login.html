@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Member Login | Illuminati Global</title><link rel="stylesheet" href="/style.css"></head>
+<body class="form-page">
+<main class="form-card">
+  <a class="brand centered" href="/">◉ <span>ILLUMINATI GLOBAL</span></a>
+  <div class="symbol small-symbol" aria-hidden="true">𓂀</div>
+  <h1>Welcome back</h1><p class="muted">Sign in to your member account.</p>
+  <form id="loginForm">
+    <label>Email address<input name="email" type="email" autocomplete="username" required></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="button full" type="submit">LOG IN</button>
+  </form>
+  <p id="message" class="message" role="status"></p>
+  <p class="muted center">New here? <a href="/register.html">Register free</a></p>
+</main>
+<script>
+document.getElementById("loginForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const message = document.getElementById("message");
+  const button = event.currentTarget.querySelector("button");
+  button.disabled = true; message.textContent = "Signing in…";
+  try {
+    const response = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});
+    const result = await response.json();
+    if (!response.ok) { message.textContent = result.message; return; }
+    location.href = result.redirect;
+  } catch { message.textContent = "Network error. Please try again."; }
+  finally { button.disabled = false; }
+});
+</script>
+</body></html>

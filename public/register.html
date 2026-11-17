@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Free Registration | Illuminati Global</title><link rel="stylesheet" href="/style.css"></head>
+<body class="form-page">
+<main class="form-card">
+  <a class="brand centered" href="/">◉ <span>ILLUMINATI GLOBAL</span></a>
+  <div class="symbol small-symbol" aria-hidden="true">𓂀</div>
+  <h1>Create your account</h1><p class="muted">Join the community for free.</p>
+  <form id="registerForm">
+    <label>Full name<input name="name" autocomplete="name" maxlength="100" required></label>
+    <label>Email address<input name="email" type="email" autocomplete="email" required></label>
+    <label>Phone number<input name="phone" type="tel" autocomplete="tel" maxlength="30" required></label>
+    <label>Country<input name="country" autocomplete="country-name" maxlength="80" required></label>
+    <label>Password<input name="password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+    <label>Confirm password<input id="confirmPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+    <button class="button full" type="submit">CREATE FREE ACCOUNT</button>
+  </form>
+  <p id="message" class="message" role="status"></p>
+  <p class="muted center">Already a member? <a href="/login.html">Log in</a></p>
+  <p class="fine-print center">By registering, you agree to use this independent community respectfully.</p>
+</main>
+<script>
+const form = document.getElementById("registerForm");
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const message = document.getElementById("message");
+  const data = Object.fromEntries(new FormData(form));
+  if (data.password !== document.getElementById("confirmPassword").value) {
+    message.textContent = "Your passwords do not match."; return;
+  }
+  delete data.confirmPassword;
+  const button = form.querySelector("button");
+  button.disabled = true; message.textContent = "Creating your account…";
+  try {
+    const response = await fetch("/api/register", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});
+    const result = await response.json();
+    message.textContent = result.message;
+    if (response.ok) { form.reset(); setTimeout(() => location.href="/login.html", 1300); }
+  } catch { message.textContent = "Network error. Please try again."; }
+  finally { button.disabled = false; }
+});
+</script>
+</body></html>

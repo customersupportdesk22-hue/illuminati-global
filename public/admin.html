@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Admin Dashboard | Illuminati Global</title><link rel="stylesheet" href="/style.css"></head>
+<body class="form-page">
+<main class="form-card wide-card">
+  <a class="brand centered" href="/">◉ <span>ILLUMINATI GLOBAL</span></a>
+  <h1>Administrator dashboard</h1>
+  <p id="status" class="muted">Loading member list…</p>
+  <div id="members" class="members"></div>
+  <button class="button full" id="logout">LOG OUT</button>
+</main>
+<script>
+const safe = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+(async () => {
+  try {
+    const response = await fetch("/api/admin/members");
+    if (response.status === 401 || response.status === 403) { location.href="/login.html"; return; }
+    if (!response.ok) throw new Error("Unable to load members.");
+    const members = await response.json();
+    document.getElementById("status").textContent = `Registered members: ${members.length}`;
+    document.getElementById("members").innerHTML = members.map(m => `
+      <article class="member-row"><strong>${safe(m.name)}</strong>
+      <span>${safe(m.email)}</span><span>${safe(m.phone)} · ${safe(m.country)}</span>
+      <small>Joined ${new Date(m.createdAt).toLocaleDateString()}</small></article>`).join("") || "<p>No members registered yet.</p>";
+  } catch (error) { document.getElementById("status").textContent = error.message; }
+})();
+document.getElementById("logout").addEventListener("click", async () => {
+  await fetch("/api/logout", {method:"POST"}); location.href="/";
+});
+</script>
+</body></html>
