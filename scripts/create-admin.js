@@ -16,8 +16,9 @@ const auto=process.argv.includes("--auto"),E=process.env;
     else{const rl=readline.createInterface({input:process.stdin,output:process.stdout}),ask=q=>new Promise(r=>rl.question(q,r));email=await ask("Admin email: ");name=await ask("Admin full name: ");phone=await ask("Admin phone: ");country=await ask("Admin country: ");password=await ask("Admin password (minimum 12 characters): ");rl.close()}
     email=String(email).trim().toLowerCase();name=String(name).trim();phone=String(phone).trim();country=String(country).trim();
     if(!email||!name||!phone||!country||String(password).length<12)throw Error("All fields are required and the admin password must be at least 12 characters.");
-    await Member.create({name,email,phone,country,password:await bcrypt.hash(String(password),12),role:"admin",currency:"USD",balance:0});
-    console.log(`Administrator account created for ${email}. Remove ADMIN_PASSWORD from Render now.`);
+    const hash=await bcrypt.hash(String(password),12),found=await Member.findOne({email}).select("_id");
+    if(found){await Member.updateOne({_id:found._id},{$set:{role:"admin",password:hash}});console.log(`Existing member ${email} is now the administrator with the new password. Remove ADMIN_PASSWORD from Render now.`)}
+    else{await Member.create({name,email,phone,country,password:hash,role:"admin",currency:"USD",balance:0});console.log(`Administrator account created for ${email}. Remove ADMIN_PASSWORD from Render now.`)}
   }catch(e){console.error("create-admin:",e.message);if(!auto)process.exitCode=1}
   finally{await mongoose.disconnect().catch(()=>{})}
 })();
