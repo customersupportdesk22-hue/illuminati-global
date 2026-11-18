@@ -7,6 +7,7 @@ const cookieParser = require("cookie-parser");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
+const fs = require("fs");
 const multer = require("multer");
 const crypto = require("crypto");
 const sharp = require("sharp");
@@ -22,6 +23,7 @@ const countryNames = new Intl.DisplayNames(["en"], { type: "region" });
 const currencyData = require("./public/countries.json");
 
 const app = express();
+app.set("trust proxy", 1); // Render sits behind a proxy; fixes rate-limit X-Forwarded-For error
 const PORT = process.env.PORT || 3000;
 if (!process.env.MONGODB_URI || !process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   console.error("Set MONGODB_URI and a JWT_SECRET of at least 32 characters in Render Environment.");
@@ -31,6 +33,9 @@ app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], 
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(cookieParser());
+// Legal pages opened from the member app get a "Back to dashboard" button instead of "Back to registration".
+const LEGAL_FIX = '<script>document.querySelectorAll("a,button").forEach(function(e){if(/back to registration/i.test(e.textContent)){e.textContent="Back to dashboard";if(e.tagName==="A")e.setAttribute("href","/dashboard.html");else e.onclick=function(){location.href="/dashboard.html"}}})</script>';
+app.get(["/terms.html", "/privacy.html"], (req, res, next) => { if (req.query.from !== "app") return next(); fs.readFile(path.join(__dirname, "public", req.path), "utf8", (e, h) => e ? next() : res.type("html").send(h.replace("</body>", LEGAL_FIX + "</body>"))); });
 app.use(express.static(path.join(__dirname, "public")));
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: "draft-7", legacyHeaders: false });
 const moneyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: "draft-7", legacyHeaders: false });
@@ -139,7 +144,7 @@ const countries = currencyData.map(c => ({
 app.get("/api/countries", (req,res) => res.json(countries));
 function signToken(member) { return jwt.sign({ id: member._id.toString(), role: member.role }, process.env.JWT_SECRET, { expiresIn: "7d" }); }
 function setAuthCookie(res, token) { res.cookie("token", token, { httpOnly:true, secure:process.env.NODE_ENV === "production", sameSite:"lax", maxAge:7*24*60*60*1000 }); }
-function authenticate(req,res,next) { try { const token=req.cookies.token; if(!token) return res.status(401).json({message:"Please log in."}); req.user=jwt.verify(token,process.env.JWT_SECRET); next(); } catch { return res.status(401).json({message:"Your session has expired. Please log in again."}); } }
+async function authenticate(req,res,next) { try { const token=req.cookies.token; if(!token) return res.status(401).json({message:"Please log in."}); const p=jwt.verify(token,process.env.JWT_SECRET); const m=await Member.findById(p.id).select("role").lean(); if(!m) return res.status(401).json({message:"Please log in."}); req.user={id:p.id,role:m.role}; next(); } catch { return res.status(401).json({message:"Your session has expired. Please log in again."}); } }
 function adminOnly(req,res,next) { if(req.user.role!=="admin") return res.status(403).json({message:"Administrator access required."}); next(); }
 
 app.post("/api/register", authLimiter, async (req,res) => {
@@ -176,6 +181,7 @@ app.get("/api/me/notifications",authenticate,async(req,res)=>{try{res.json(await
 app.post("/api/me/notifications/read",authenticate,async(req,res)=>{try{await Notification.updateMany({member:req.user.id,read:false},{$set:{read:true}});res.json({message:"Notifications marked as read."});}catch{res.status(500).json({message:"Could not update notifications."});}});
 app.get("/api/me/chat",authenticate,async(req,res)=>{try{await ChatMessage.updateMany({member:req.user.id,senderRole:"admin",readAt:null},{$set:{readAt:new Date()}});res.json(await ChatMessage.find({member:req.user.id}).sort({createdAt:1}).limit(200).lean());}catch{res.status(500).json({message:"Could not load chat."});}});
 app.post("/api/me/chat",authenticate,moneyLimiter,async(req,res)=>{try{const message=String(req.body.message||"").trim();if(!message||message.length>2000)return res.status(400).json({message:"Enter a message of up to 2,000 characters."});const item=await ChatMessage.create({member:req.user.id,senderRole:"member",message});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send your message."});}});
+app.get("/api/me/chat/unread",authenticate,async(req,res)=>{try{res.json({count:await ChatMessage.countDocuments({member:req.user.id,senderRole:"admin",readAt:null})})}catch{res.status(500).json({count:0})}});
 // Identity documents are stored privately in MongoDB, never in the public web folder.
 app.get("/api/me/kyc", authenticate, async (req,res) => {
   try { const docs=await KycDocument.find({member:req.user.id}).select("-data -sha256").lean(); const review=await KycReview.findOne({member:req.user.id}).select("-__v").lean(); res.json({status:review?.status||"not_submitted",kraNumber:review?.kraNumber||"",adminNote:review?.adminNote||"",documents:docs.map(d=>({kind:d.kind,filename:d.filename,size:d.size,createdAt:d.createdAt}))}); }
