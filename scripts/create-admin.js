@@ -1,5 +1,23 @@
 require("dotenv").config();
 const mongoose=require("mongoose"),bcrypt=require("bcryptjs"),readline=require("readline");
-const schema=new mongoose.Schema({name:String,email:{type:String,unique:true,lowercase:true},phone:String,country:String,countryCode:String,dialCode:String,currency:String,balance:{type:Number,default:0},password:{type:String,select:false},role:{type:String,default:"member"},createdAt:{type:Date,default:Date.now}});
-const Member=mongoose.model("Member",schema);const rl=readline.createInterface({input:process.stdin,output:process.stdout});const ask=q=>new Promise(resolve=>rl.question(q,resolve));
-(async()=>{try{if(!process.env.MONGODB_URI)throw Error("MONGODB_URI is missing.");if(!process.env.JWT_SECRET||process.env.JWT_SECRET.length<32)throw Error("Set a JWT_SECRET of at least 32 characters.");await mongoose.connect(process.env.MONGODB_URI);const existing=await Member.findOne({role:"admin"});if(existing)throw Error(`An administrator already exists (${existing.email}). Only one administrator is allowed. Use that account to manage the platform.`);const email=String(await ask("Admin email: ")).trim().toLowerCase(),name=String(await ask("Admin full name: ")).trim(),phone=String(await ask("Admin phone: ")).trim(),country=String(await ask("Admin country: ")).trim(),password=await ask("Admin password (minimum 12 characters): ");if(!email||!name||!phone||!country||password.length<12)throw Error("All fields are required and admin password must be at least 12 characters.");const hash=await bcrypt.hash(password,12);await Member.create({name,email,phone,country,password:hash,role:"admin",currency:"USD",balance:0});console.log("The single administrator account has been created.");}catch(e){console.error(e.message);process.exitCode=1;}finally{rl.close();await mongoose.disconnect().catch(()=>{});}})();
+const Member=mongoose.model("Member",new mongoose.Schema({name:String,email:{type:String,unique:true,lowercase:true},phone:String,country:String,countryCode:String,dialCode:String,currency:String,balance:{type:Number,default:0},password:{type:String,select:false},role:{type:String,default:"member"},createdAt:{type:Date,default:Date.now}}));
+// Mode 1 (npm start -> prestart, --auto): creates the admin from Render environment variables, only if none exists. Never blocks the server from starting.
+// Mode 2 (npm run create-admin): asks questions in the terminal.
+const auto=process.argv.includes("--auto"),E=process.env;
+(async()=>{
+  try{
+    if(!E.MONGODB_URI)throw Error("MONGODB_URI is missing.");
+    if(auto&&!(E.ADMIN_EMAIL&&E.ADMIN_PASSWORD))return;
+    await mongoose.connect(E.MONGODB_URI);
+    const existing=await Member.findOne({role:"admin"});
+    if(existing){console.log(`Administrator already exists (${existing.email}).`);return}
+    let email,name,phone,country,password;
+    if(auto){email=E.ADMIN_EMAIL;name=E.ADMIN_NAME||"Administrator";phone=E.ADMIN_PHONE||"0000000000";country=E.ADMIN_COUNTRY||"Kenya";password=E.ADMIN_PASSWORD}
+    else{const rl=readline.createInterface({input:process.stdin,output:process.stdout}),ask=q=>new Promise(r=>rl.question(q,r));email=await ask("Admin email: ");name=await ask("Admin full name: ");phone=await ask("Admin phone: ");country=await ask("Admin country: ");password=await ask("Admin password (minimum 12 characters): ");rl.close()}
+    email=String(email).trim().toLowerCase();name=String(name).trim();phone=String(phone).trim();country=String(country).trim();
+    if(!email||!name||!phone||!country||String(password).length<12)throw Error("All fields are required and the admin password must be at least 12 characters.");
+    await Member.create({name,email,phone,country,password:await bcrypt.hash(String(password),12),role:"admin",currency:"USD",balance:0});
+    console.log(`Administrator account created for ${email}. Remove ADMIN_PASSWORD from Render now.`);
+  }catch(e){console.error("create-admin:",e.message);if(!auto)process.exitCode=1}
+  finally{await mongoose.disconnect().catch(()=>{})}
+})();
