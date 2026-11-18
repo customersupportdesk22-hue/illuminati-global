@@ -9,6 +9,14 @@ const rateLimit = require("express-rate-limit");
 const path = require("path");
 const multer = require("multer");
 const crypto = require("crypto");
+const sharp = require("sharp");
+// Optional Cloudinary storage. In Render set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET (or one CLOUDINARY_URL).
+// Without it, images are stored in MongoDB exactly as before. Files are uploaded as "authenticated" (private).
+const cloud = !!(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET));
+const cloudinary = cloud ? require("cloudinary").v2 : null;
+if (cloud && !process.env.CLOUDINARY_URL) cloudinary.config({ cloud_name: process.env.CLOUDINARY_CLOUD_NAME, api_key: process.env.CLOUDINARY_API_KEY, api_secret: process.env.CLOUDINARY_API_SECRET, secure: true });
+function cloudUpload(buf, folder, resourceType) { return new Promise((ok, fail) => cloudinary.uploader.upload_stream({ folder, type: "authenticated", resource_type: resourceType }, (e, r) => e ? fail(e) : ok(r)).end(buf)); }
+async function cloudFetch(d) { const u = cloudinary.url(d.publicId, { type: "authenticated", resource_type: d.resourceType, sign_url: true, secure: true, format: d.resourceType === "image" ? d.format : undefined }); const r = await fetch(u); if (!r.ok) throw new Error("Cloudinary fetch failed"); return Buffer.from(await r.arrayBuffer()); }
 const { getCountries, getCountryCallingCode } = require("libphonenumber-js");
 const countryNames = new Intl.DisplayNames(["en"], { type: "region" });
 const currencyData = require("./public/countries.json");
@@ -19,7 +27,7 @@ if (!process.env.MONGODB_URI || !process.env.JWT_SECRET || process.env.JWT_SECRE
   console.error("Set MONGODB_URI and a JWT_SECRET of at least 32 characters in Render Environment.");
   process.exit(1);
 }
-app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", "data:"], scriptSrc: ["'self'", "'unsafe-inline'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'", "https://nominatim.openstreetmap.org"] } } }));
+app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", "data:", "blob:"], scriptSrc: ["'self'", "'unsafe-inline'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'", "https://nominatim.openstreetmap.org"] } } }));
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(cookieParser());
@@ -75,7 +83,11 @@ const Notification = mongoose.model("Notification", new mongoose.Schema({
 const ChatMessage = mongoose.model("ChatMessage", new mongoose.Schema({
   member: { type: mongoose.Schema.Types.ObjectId, ref: "Member", required: true, index: true },
   senderRole: { type: String, enum: ["member", "admin"], required: true },
-  message: { type: String, required: true, maxlength: 2000, trim: true },
+  message: { type: String, maxlength: 2000, trim: true, default: "" },
+  hasImage: { type: Boolean, default: false },
+  imageType: { type: String, default: "" },
+  image: { type: Buffer, select: false },
+  publicId: { type: String, default: "" }, resourceType: { type: String, default: "" }, format: { type: String, default: "" },
   deliveredAt: { type: Date, default: Date.now },
   readAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
@@ -88,7 +100,8 @@ const KycDocument = mongoose.model("KycDocument", new mongoose.Schema({
   mimeType: { type: String, required: true, enum: ["image/jpeg", "image/png", "application/pdf"] },
   size: { type: Number, required: true, max: 8 * 1024 * 1024 },
   sha256: { type: String, required: true },
-  data: { type: Buffer, required: true, select: false },
+  data: { type: Buffer, select: false },
+  publicId: { type: String, default: "" }, resourceType: { type: String, default: "" }, format: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now }
 }));
 const KycReview = mongoose.model("KycReview", new mongoose.Schema({
@@ -99,6 +112,22 @@ const KycReview = mongoose.model("KycReview", new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }));
 const kycUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
+const chatUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
+const upl = m => (req, res, next) => m(req, res, err => err ? res.status(400).json({ message: "That file is too large or invalid." }) : next());
+// Rejects blurry, dark, glared or low-resolution photos (thresholds are slightly looser than the browser check).
+async function imageQuality(buf, kind) {
+  const meta = await sharp(buf).metadata();
+  if (Math.max(meta.width || 0, meta.height || 0) < 1000) return "Photo resolution is too low. Move closer and retake it.";
+  const g = sharp(buf).rotate().resize(600, 600, { fit: "inside" }).greyscale();
+  const mean = (await g.clone().stats()).channels[0].mean;
+  if (mean < 55) return "Photo is too dark. Use better lighting and retake it.";
+  if (mean > 225) return "Photo is too bright or has glare. Retake it.";
+  const { data } = await g.clone().convolve({ width: 3, height: 3, kernel: [0,1,0,1,-4,1,0,1,0], scale: 1, offset: 128 }).raw().toBuffer({ resolveWithObject: true });
+  let s = 0, s2 = 0; for (const v of data) { const d = v - 128; s += d; s2 += d * d; }
+  const variance = s2 / data.length - (s / data.length) ** 2;
+  if (variance < (kind === "selfie" ? 30 : 60)) return "Photo is blurry. Hold steady, tap to focus and retake it.";
+  return null;
+}
 
 const callingCodes = Object.fromEntries(getCountries().map(code => [code, `+${getCountryCallingCode(code)}`]));
 const countries = currencyData.map(c => ({
@@ -149,10 +178,10 @@ app.get("/api/me/chat",authenticate,async(req,res)=>{try{await ChatMessage.updat
 app.post("/api/me/chat",authenticate,moneyLimiter,async(req,res)=>{try{const message=String(req.body.message||"").trim();if(!message||message.length>2000)return res.status(400).json({message:"Enter a message of up to 2,000 characters."});const item=await ChatMessage.create({member:req.user.id,senderRole:"member",message});res.status(201).json(item);}catch{res.status(500).json({message:"Could not send your message."});}});
 // Identity documents are stored privately in MongoDB, never in the public web folder.
 app.get("/api/me/kyc", authenticate, async (req,res) => {
-  try { const docs=await KycDocument.find({member:req.user.id}).select("-data -sha256").lean(); const review=await KycReview.findOne({member:req.user.id}).select("-__v").lean(); res.json({status:review?.status||"not_submitted",kraNumber:review?.kraNumber||"",documents:docs.map(d=>({kind:d.kind,filename:d.filename,size:d.size,createdAt:d.createdAt}))}); }
+  try { const docs=await KycDocument.find({member:req.user.id}).select("-data -sha256").lean(); const review=await KycReview.findOne({member:req.user.id}).select("-__v").lean(); res.json({status:review?.status||"not_submitted",kraNumber:review?.kraNumber||"",adminNote:review?.adminNote||"",documents:docs.map(d=>({kind:d.kind,filename:d.filename,size:d.size,createdAt:d.createdAt}))}); }
   catch { res.status(500).json({message:"Could not load verification status."}); }
 });
-app.post("/api/me/kyc", authenticate, kycUpload.single("document"), async (req,res) => {
+app.post("/api/me/kyc", authenticate, upl(kycUpload.single("document")), async (req,res) => {
   try {
     const kind=String(req.body.kind||""), kraNumber=String(req.body.kraNumber||"").trim();
     if(!["id_front","id_back","selfie","kra"].includes(kind)) return res.status(400).json({message:"Choose a valid document type."});
@@ -160,9 +189,14 @@ app.post("/api/me/kyc", authenticate, kycUpload.single("document"), async (req,r
     if(!["image/jpeg","image/png","application/pdf"].includes(req.file.mimetype)) return res.status(400).json({message:"Only JPG, PNG or PDF files are accepted."});
     if(kind!=="kra" && req.file.mimetype==="application/pdf") return res.status(400).json({message:"ID and selfie uploads must be JPG or PNG images."});
     if(kind==="kra" && !kraNumber) return res.status(400).json({message:"Enter your KRA PIN for this document."});
+    if(req.file.mimetype!=="application/pdf"){const bad=await imageQuality(req.file.buffer,kind).catch(()=>"Could not read this image. Please retake it."); if(bad) return res.status(422).json({message:bad});}
     const digest=crypto.createHash("sha256").update(req.file.buffer).digest("hex");
     if(await KycDocument.findOne({member:req.user.id,sha256:digest}).select("_id")) return res.status(409).json({message:"This exact document has already been submitted."});
-    await KycDocument.create({member:req.user.id,kind,filename:path.basename(req.file.originalname).slice(0,180),mimeType:req.file.mimetype,size:req.file.size,sha256:digest,data:req.file.buffer});
+    let store={data:req.file.buffer};
+    if(cloud){const r=await cloudUpload(req.file.buffer,"kyc/"+req.user.id,req.file.mimetype==="application/pdf"?"raw":"image");store={publicId:r.public_id,resourceType:r.resource_type,format:r.format||""};
+      for(const o of await KycDocument.find({member:req.user.id,kind}).select("publicId resourceType")) if(o.publicId) await cloudinary.uploader.destroy(o.publicId,{type:"authenticated",resource_type:o.resourceType}).catch(()=>{});}
+    await KycDocument.deleteMany({member:req.user.id,kind});
+    await KycDocument.create({member:req.user.id,kind,filename:path.basename(req.file.originalname).slice(0,180),mimeType:req.file.mimetype,size:req.file.size,sha256:digest,...store});
     const update={status:"pending",updatedAt:new Date()}; if(kind==="kra") update.kraNumber=kraNumber;
     await KycReview.findOneAndUpdate({member:req.user.id},{$set:update},{upsert:true,new:true});
     await Member.findByIdAndUpdate(req.user.id,{kycStatus:"pending"});
@@ -171,9 +205,35 @@ app.post("/api/me/kyc", authenticate, kycUpload.single("document"), async (req,r
   } catch(error) { console.error("KYC upload:",error); res.status(500).json({message:"Could not store your document."}); }
 });
 app.get("/api/admin/kyc",authenticate,adminOnly,async(req,res)=>{try{res.json(await KycReview.find().populate("member","name email country").sort({updatedAt:-1}).lean());}catch{res.status(500).json({message:"Could not load verification reviews."});}});
-app.get("/api/admin/kyc/:memberId/documents/:kind",authenticate,adminOnly,async(req,res)=>{try{if(!["id_front","id_back","selfie","kra"].includes(req.params.kind))return res.sendStatus(404);const doc=await KycDocument.findOne({member:req.params.memberId,kind:req.params.kind}).select("+data");if(!doc)return res.sendStatus(404);res.set("Content-Type",doc.mimeType);res.set("Content-Disposition",`inline; filename="${doc.filename.replace(/["\\]/g,"")}"`);res.set("Cache-Control","no-store");res.send(doc.data);}catch{res.sendStatus(500);}});
+app.get("/api/admin/kyc/:memberId/documents/:kind",authenticate,adminOnly,async(req,res)=>{try{if(!["id_front","id_back","selfie","kra"].includes(req.params.kind))return res.sendStatus(404);const doc=await KycDocument.findOne({member:req.params.memberId,kind:req.params.kind}).select("+data");if(!doc)return res.sendStatus(404);res.set("Content-Type",doc.mimeType);res.set("Content-Disposition",`inline; filename="${doc.filename.replace(/["\\]/g,"")}"`);res.set("Cache-Control","no-store");res.send(doc.publicId?await cloudFetch(doc):doc.data);}catch{res.sendStatus(500);}});
 app.post("/api/admin/kyc/:memberId/review",authenticate,adminOnly,async(req,res)=>{try{const status=String(req.body.status||"");if(!["approved","rejected"].includes(status))return res.status(400).json({message:"Choose approved or rejected."});const adminNote=String(req.body.adminNote||"").trim().slice(0,500);const review=await KycReview.findOneAndUpdate({member:req.params.memberId},{$set:{status,adminNote,updatedAt:new Date()}},{new:true});if(!review)return res.status(404).json({message:"Verification record not found."});await Member.findByIdAndUpdate(req.params.memberId,{kycStatus:status});await Notification.create({member:req.params.memberId,title:"Verification status updated",body:`Your identity verification was ${status}. ${adminNote}`.trim()});res.json({message:"Verification review saved."});}catch{res.status(500).json({message:"Could not save verification review."});}});
 
+// ---- Chat photos (member and admin). Stored privately in MongoDB, served only to the conversation owner / admin.
+async function saveChatImage(req, res, memberId, role) {
+  try {
+    if (!req.file) return res.status(400).json({ message: "Choose a photo to send." });
+    let meta; try { meta = await sharp(req.file.buffer).metadata(); } catch {}
+    if (!meta || !["jpeg", "png", "webp"].includes(meta.format)) return res.status(400).json({ message: "Only JPG, PNG or WebP photos are accepted." });
+    const message = String(req.body.message || "").trim().slice(0, 2000);
+    const store = cloud ? await cloudUpload(req.file.buffer, "chat/" + memberId, "image").then(r => ({ publicId: r.public_id, resourceType: "image", format: r.format })) : { image: req.file.buffer };
+    const item = await ChatMessage.create({ member: memberId, senderRole: role, message, hasImage: true, imageType: "image/" + meta.format, ...store });
+    if (role === "admin") await Notification.create({ member: memberId, title: "New support reply", body: "An administrator has replied to your support conversation." });
+    res.status(201).json({ _id: item._id, hasImage: true, message });
+  } catch (e) { console.error("Chat image:", e); res.status(500).json({ message: "Could not send the photo." }); }
+}
+async function serveChatImage(req, res, filter) {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.sendStatus(404);
+    const m = await ChatMessage.findOne({ _id: req.params.id, hasImage: true, ...filter }).select("+image");
+    if (!m) return res.sendStatus(404);
+    res.set({ "Content-Type": m.imageType, "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
+    res.send(m.publicId ? await cloudFetch(m) : m.image);
+  } catch { res.sendStatus(500); }
+}
+app.post("/api/me/chat/image", authenticate, moneyLimiter, upl(chatUpload.single("image")), (req, res) => saveChatImage(req, res, req.user.id, "member"));
+app.get("/api/me/chat/image/:id", authenticate, (req, res) => serveChatImage(req, res, { member: req.user.id }));
+app.post("/api/admin/chat/image", authenticate, adminOnly, upl(chatUpload.single("image")), (req, res) => { if (!mongoose.isValidObjectId(String(req.body.memberId || ""))) return res.status(400).json({ message: "Select a member first." }); saveChatImage(req, res, String(req.body.memberId), "admin"); });
+app.get("/api/admin/chat/image/:id", authenticate, adminOnly, (req, res) => serveChatImage(req, res, {}));
 app.post("/api/logout",(req,res)=>{res.clearCookie("token",{httpOnly:true,secure:process.env.NODE_ENV==="production",sameSite:"lax"});res.json({message:"You have been logged out."});});
 app.get("/api/admin/members",authenticate,adminOnly,async(req,res)=>{try{const members=await Member.find().select("-password").sort({createdAt:-1}).lean();res.json(members);}catch{res.status(500).json({message:"Could not load members."});}});
 app.get("/api/admin/transactions",authenticate,adminOnly,async(req,res)=>{try{const items=await Transaction.find().populate("member","name email country currency").populate("performedBy","name email").sort({createdAt:-1}).limit(250).lean();res.json(items);}catch{res.status(500).json({message:"Could not load transactions."});}});
